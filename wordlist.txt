@@ -1,0 +1,10 @@
+cat
+banana
+umbrella
+dinosaur
+giraffe
+keyboard
+planet
+astronaut
+rocket
+satellite

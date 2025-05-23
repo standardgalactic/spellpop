@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>SpellPop Game</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <style>
+    body {
+      font-family: monospace, 'Sga Regular', Arial, sans-serif;
+      color: #00ff00;
+      background: black;
+      margin: 0;
+      overflow: hidden;
+    }
+    canvas#starfield-bg {
+      position: fixed;
+      top: 0; left: 0; z-index: 0;
+      width: 100vw; height: 100vh;
+      pointer-events: none;
+    }
+    canvas#gameCanvas {
+      display: block;
+      position: absolute;
+      left: 0; top: 0;
+      width: 100vw; height: 100vh;
+      z-index: 1;
+      pointer-events: auto;
+    }
+    #scoreboard {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      color: #00FF00;
+      font-size: 20px;
+      text-shadow: 0 0 10px #00FF00;
+      z-index: 2;
+      pointer-events: none;
+    }
+    #inputBox {
+      position: absolute;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #111;
+      color: #00FF00;
+      font-family: monospace;
+      border: 1px solid #00FF00;
+      font-size: 20px;
+      padding: 5px 10px;
+      outline: none;
+      z-index: 2;
+      width: 320px;
+      text-align: center;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="starfield-bg"></canvas>
+  <canvas id="gameCanvas"></canvas>
+  <audio id="popSound" src="pop.mp3" preload="auto"></audio>
+  <audio id="eggSound" src="egg.mp3" preload="auto"></audio>
+  <div id="scoreboard"></div>
+  <input id="inputBox" autocomplete="off" spellcheck="false" placeholder="Type correct spelling to pop!"/>
+  <script type="text/javascript">
+    // ========== STARFIELD - "FLYING THROUGH SPACE" EFFECT ==========
+    const starCanvas = document.getElementById('starfield-bg');
+    const starCtx = starCanvas.getContext('2d');
+    let sw = window.innerWidth, sh = window.innerHeight;
+    let stars = [];
+    const numStars = 700;
+    let speed = 4;
+    function resizeStarfield() {
+      sw = window.innerWidth;
+      sh = window.innerHeight;
+      starCanvas.width = sw;
+      starCanvas.height = sh;
+    }
+    window.addEventListener('resize', resizeStarfield);
+    resizeStarfield();
+
+    function resetStars() {
+      stars = [];
+      for(let i=0;i<numStars;i++){
+        stars.push({
+          x: Math.random()*sw - sw/2,
+          y: Math.random()*sh - sh/2,
+          z: Math.random()*sw,
+          pz: 0
+        });
+      }
+    }
+    resetStars();
+
+    function animateStarfield() {
+      starCtx.fillStyle = "black";
+      starCtx.fillRect(0,0,sw,sh);
+      for (let star of stars) {
+        star.pz = star.z;
+        star.z -= speed * 0.16;
+        if (star.z < 1) {
+          star.x = Math.random()*sw - sw/2;
+          star.y = Math.random()*sh - sh/2;
+          star.z = sw;
+          star.pz = star.z;
+        }
+        let sx = (star.x / star.z) * sw/2 + sw/2;
+        let sy = (star.y / star.z) * sh/2 + sh/2;
+        let psx = (star.x / star.pz) * sw/2 + sw/2;
+        let psy = (star.y / star.pz) * sh/2 + sh/2;
+        let r = Math.max(0.2, 2 - star.z*0.002);
+        starCtx.beginPath();
+        starCtx.strokeStyle = "#fff";
+        starCtx.lineWidth = r;
+        starCtx.moveTo(psx, psy);
+        starCtx.lineTo(sx, sy);
+        starCtx.stroke();
+      }
+      requestAnimationFrame(animateStarfield);
+    }
+    animateStarfield();
+
+    // ========== SPELLPOP GAME LOGIC ==========
+    const canvas = document.getElementById("gameCanvas");
+    const ctx = canvas.getContext("2d");
+    function resizeGameCanvas() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    resizeGameCanvas();
+    window.addEventListener('resize', resizeGameCanvas);
+
+    const scoreboard = document.getElementById("scoreboard");
+    const inputBox = document.getElementById("inputBox");
+    const popSound = document.getElementById("popSound");
+    const eggSound = document.getElementById("eggSound");
+
+    const bubbleRadius = 40;
+    const flareSpeed = 6;
+    const flareRadius = 5;
+    const scopeRadius = 20;
+    const bubbles = [];
+    const correctWords = new Set();
+    let wordTypos = {};  // word -> [typo, typo,...]
+    let expertMode = false;
+    let flares = [];
+    let score = 0;
+    let highScore = 10;
+    let wordlist = [];
+    let expertWordlist = [];
+    let level = 1;
+    let advancing = false;
+
+    const scope = {
+      x: window.innerWidth / 2,
+      y: window.innerHeight / 2,
+      speed: 5
+    };
+
+    // WORDLIST LOADING
+    function fetchWordlist(url, assignTo) {
+      return fetch(url)
+        .then(response => response.text())
+        .then(data => {
+          const arr = data.split("\n").map(w => w.trim()).filter(w => w.length > 0);
+          if (assignTo === "wordlist") wordlist = arr;
+          else if (assignTo === "expertWordlist") expertWordlist = arr;
+          return arr;
+        });
+    }
+    Promise.all([
+      fetchWordlist("wordlist.txt", "wordlist"),
+      fetchWordlist("expert-wordlist.txt", "expertWordlist")
+    ]).then(initGame);
+
+    // TYPO GENERATOR
+    function generateTypos(word, nTypos = 6) {
+      const qwertyNear = {
+        a: "qwsz", b: "vghn", c: "xdfv", d: "ersfcx",
+        e: "wsdr", f: "rtgvcd", g: "tyhbvf", h: "yujnbg",
+        i: "ujko", j: "uikmnh", k: "ijolm", l: "opk",
+        m: "njk", n: "bhjm", o: "iklp", p: "ol",
+        q: "wa", r: "edft", s: "wedxz", t: "rfgy",
+        u: "yhji", v: "cfgb", w: "qase", x: "zsdc",
+        y: "tghu", z: "asx"
+      };
+      const typos = new Set();
+      while (typos.size < nTypos && word.length > 1) {
+        const i = Math.floor(Math.random() * word.length);
+        const ch = word[i].toLowerCase();
+        if (qwertyNear[ch]) {
+          const wrong = qwertyNear[ch][Math.floor(Math.random() * qwertyNear[ch].length)];
+          const typo = word.slice(0, i) + wrong + word.slice(i + 1);
+          if (typo !== word) typos.add(typo);
+        }
+      }
+      return Array.from(typos);
+    }
+
+    // BUBBLES & LEVEL MGMT
+    function spawnBubble(word, correct = false) {
+      bubbles.push({
+        word,
+        correct,
+        x: Math.random() * (canvas.width - 2 * bubbleRadius) + bubbleRadius,
+        y: Math.random() * (canvas.height - 2 * bubbleRadius) + bubbleRadius,
+        vx: (Math.random() - 0.5) * 2,
+        vy: (Math.random() - 0.5) * 2,
+        alpha: 1,
+        flash: 0 // how many frames remain for the orange flash
+      });
+    }
+
+    function resetGame() {
+      bubbles.length = 0;
+      correctWords.clear();
+      wordTypos = {};
+      flares = [];
+      inputBox.value = "";
+    }
+
+    function initGame(nextLvl = false) {
+      advancing = false;
+      if (!nextLvl) {score = 0; level = 1; expertMode = false;}
+      resetGame();
+      let wl = expertMode ? expertWordlist : wordlist;
+      let nWords = Math.min(5 + level, wl.length);
+      // Pick unique words
+      let pool = wl.slice();
+      for (let i = 0; i < nWords && pool.length > 0; i++) {
+        let idx = Math.floor(Math.random() * pool.length);
+        const word = pool.splice(idx,1)[0];
+        correctWords.add(word);
+        spawnBubble(word, true);
+        let typos = generateTypos(word, 2 + Math.floor(level/2));
+        wordTypos[word] = typos;
+        typos.forEach(typo => spawnBubble(typo, false));
+      }
+      inputBox.style.display = "block";
+      inputBox.value = "";
+      inputBox.blur();
+    }
+
+    function advanceLevel() {
+      if (advancing) return;
+      advancing = true;
+      eggSound.play();
+      setTimeout(() => {
+        level++;
+        if ((level > 2 && !expertMode) || (level > 4 && expertWordlist.length > 0)) {
+          expertMode = true;
+        }
+        initGame(true);
+      }, 1200);
+    }
+
+    // DRAWING
+    function drawBubble(b) {
+      ctx.save();
+      ctx.globalAlpha = b.alpha;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, bubbleRadius, 0, Math.PI * 2);
+      if (b.flash > 0) {
+        ctx.strokeStyle = "#FFA500";
+        ctx.shadowColor = "#FFA500";
+        ctx.shadowBlur = 18;
+      } else {
+        ctx.strokeStyle = "#00FF00";
+        ctx.shadowColor = "#00FF00";
+        ctx.shadowBlur = 10;
+      }
+      ctx.stroke();
+      ctx.fillStyle = "#021c03";
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "#00FF00";
+      ctx.font = "16px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(b.word, b.x, b.y);
+      ctx.restore();
+      if (b.flash > 0) b.flash--;
+    }
+    function drawScope() {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(scope.x, scope.y, scopeRadius, 0, Math.PI * 2);
+      ctx.strokeStyle = "#00FF00";
+      ctx.shadowColor = "#00FF00";
+      ctx.shadowBlur = 8;
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(scope.x - scopeRadius, scope.y);
+      ctx.lineTo(scope.x + scopeRadius, scope.y);
+      ctx.moveTo(scope.x, scope.y - scopeRadius);
+      ctx.lineTo(scope.x, scope.y + scopeRadius);
+      ctx.stroke();
+      ctx.restore();
+    }
+    function drawFlare(f) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(f.x, f.y, flareRadius, 0, Math.PI * 2);
+      ctx.fillStyle = "#00FF00";
+      ctx.shadowColor = "#00FF00";
+      ctx.shadowBlur = 14;
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // GAME LOOP
+    function update() {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // move and draw bubbles
+      for (const b of bubbles) {
+        b.x += b.vx;
+        b.y += b.vy;
+        if (b.x < bubbleRadius || b.x > canvas.width - bubbleRadius) b.vx *= -1;
+        if (b.y < bubbleRadius || b.y > canvas.height - bubbleRadius) b.vy *= -1;
+        drawBubble(b);
+      }
+      // move and draw flares
+      for (let i = flares.length - 1; i >= 0; i--) {
+        const f = flares[i];
+        f.y -= flareSpeed;
+        drawFlare(f);
+        // check for collision with typo bubbles
+        for (let j = bubbles.length - 1; j >= 0; j--) {
+          const b = bubbles[j];
+          if (b.correct) continue;
+          const dx = b.x - f.x, dy = b.y - f.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist < bubbleRadius) {
+            popSound.play();
+            bubbles.splice(j, 1);
+            flares.splice(i, 1);
+            score++;
+            break;
+          }
+        }
+      }
+      // Level logic: advance if all typo bubbles are gone
+      if (!advancing && bubbles.every(b => b.correct)) {
+        advanceLevel();
+      }
+      // scoreboard
+      scoreboard.innerText = `Score: ${score}   High Score: ${highScore}   Level: ${level}` + (expertMode ? " [EXPERT]" : "");
+      drawScope();
+      requestAnimationFrame(update);
+    }
+
+    // INPUT HANDLING
+    // Typing correct spelling: clears typo bubbles for that word, keeps correct bubble
+    inputBox.addEventListener("keydown", function(e) {
+      if (e.key === "Enter" && inputBox.value) {
+        const val = inputBox.value.trim();
+        if (correctWords.has(val)) {
+          // Remove ALL typo bubbles for this word, keep the correct one
+          let typos = wordTypos[val] || [];
+          let removed = 0;
+          for (let i = bubbles.length - 1; i >= 0; --i) {
+            if (!bubbles[i].correct && typos.includes(bubbles[i].word)) {
+              bubbles.splice(i, 1);
+              removed++;
+              score++;
+            }
+          }
+          if (removed > 0) eggSound.play();
+          inputBox.value = "";
+          if (score > highScore) highScore = score;
+        } else {
+          inputBox.value = "";
+        }
+      }
+    });
+
+    // Clicking bubbles
+    canvas.addEventListener("mousedown", function(e) {
+      const rect = canvas.getBoundingClientRect();
+      const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+      const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+      for (let i = bubbles.length - 1; i >= 0; --i) {
+        const b = bubbles[i];
+        const dx = b.x - mx, dy = b.y - my;
+        if (dx * dx + dy * dy < bubbleRadius * bubbleRadius) {
+          if (!b.correct) {
+            bubbles.splice(i, 1);
+            popSound.play();
+            score++;
+            if (score > highScore) highScore = score;
+          } else {
+            // Flash orange and lose points!
+            b.flash = 20;
+            score = Math.max(0, score - 5);
+          }
+          break;
+        }
+      }
+    });
+
+    // Scope movement & flare shooting
+    document.addEventListener("keydown", e => {
+      if (inputBox === document.activeElement) return;
+      if (e.key === "ArrowLeft") scope.x = Math.max(scope.x - scope.speed, scopeRadius);
+      if (e.key === "ArrowRight") scope.x = Math.min(scope.x + scope.speed, canvas.width - scopeRadius);
+      if (e.key === "ArrowUp") scope.y = Math.max(scope.y - scope.speed, scopeRadius);
+      if (e.key === "ArrowDown") scope.y = Math.min(scope.y + scope.speed, canvas.height - scopeRadius);
+      if (e.key === " ") {
+        flares.push({ x: scope.x, y: scope.y });
+      }
+      if (/^[a-zA-Z]$/.test(e.key)) {
+        inputBox.style.display = "block";
+        inputBox.focus();
+      }
+      if (e.key === "r") {
+        initGame();
+      }
+    });
+
+    inputBox.style.display = "block";
+    inputBox.blur();
+    update();
+  </script>
+</body>
+</html>
